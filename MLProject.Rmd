@@ -1,0 +1,145 @@
+---
+title: "Analysis of data from personal finess devices"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Background and Data Description
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. y they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.
+
+The aim of this report is to develop a predictive model that looks at the data and uses the different variables to predict the quality of the workout. This is given in the classe variable in the data set and divided into 5 categories from A to E. Since the aim is to perform a classification between the different classe types, algorithms that are good for classification need to be employed. 
+
+
+The training and test data sets can be downloaded and read into R as follows. 
+```{r, cache=TRUE}
+setwd("C:\\Users\\Alina\\OneDrive\\R")
+training<-read.csv("pml-training.csv")
+testing<-read.csv("pml-testing.csv")
+
+```
+Similarly, the R packages required for subsequent processing will also be loaded at this stage.
+```{r, warning=FALSE}
+library(caret)
+library(randomForest)
+```
+
+We look at the training data set to get an idea about the kind of variables that are making it up and also to ascertain the distribution of the classe variable.
+
+```{r}
+str(training, list.len=15)
+barplot(table(training$classe))
+```
+
+To reduce the dimension of the data set, the first 7 columns of the data set can be removed since they are not useful for predicting the classe type. 
+
+```{r}
+training<-training[,8:160]
+testing<-testing[,8:160]
+```
+As part of preprocessing the columns with a majority of NA values can be removed.
+
+```{r}
+not_na<-apply(!is.na(training), 2, sum)>19621 #the total no of observations
+training<-training[,not_na]
+testing<-testing[, not_na]
+```
+
+To perform cross-validation with the predictive model, the training set will be divided into 2 parts. 60% of the training set will be used to build the model and the remaining 40% will be used for validation once the model is built. 
+
+```{r}
+set.seed(12345)
+inTrain<-createDataPartition(y=training$classe, p=0.6, list=FALSE)
+train1<-training[inTrain,]
+train2<-training[-inTrain,] #for validation
+dim(train1)
+```
+So there are stil 86 different variables in the data set that can be used for prediction. Further preprocessing needs to be done to narrow down to a smaller number of variables that can predict the classe with a high level of accuracy. In order to do so, the variables that show near zero variance will be removed since they are not likely to be good predictors of the classe.
+
+```{r}
+nzv<-nearZeroVar(train1)
+if (length(nzv)>0){
+  train1<-train1[,-nzv]
+  train2<-train2[,-nzv]
+}
+dim(train1)
+```
+After removing the near zero variance covariates, there are 53 predictors left in the training set. But 53 is still too many covariates. The random forest package will be used to identify the most important of these variables for prediction purposes.
+
+```{r, cache=TRUE}
+set.seed(33633)
+modfit<-randomForest(classe~., data=train1, importance=TRUE, ntree=100)
+varImpPlot(modfit)
+```
+
+Using the accuracy and Gini plots, the 10 most important variables for prediction can be identified. A predictive model based on these 10 will be created and tested for accuracy. If the resulting  model has a high accuracy level it will be accepted. Otherwise the number of covariates being selected can be increased to include more. This is a necessary step as predicting with 53 variables is too time consuming through most of the algorithms to be practical. 
+
+The 10 most important covariates are: yaw_belt, roll_belt, num_window, pitch_belt, magnet_dumbbell_y, magnet_dumbbell_z, pitch_forearm, accel_dumbbell_y, roll_arm, and roll_forearm.
+
+Next the correlation between these 10 variables will be calculated to check whether any of them are highly correlated (more than 75%) and can be removed from the prediction set. 
+
+```{r}
+correl<-cor(train1[,c("yaw_belt","roll_belt","pitch_belt","magnet_dumbbell_z","magnet_dumbbell_y","pitch_forearm","accel_dumbbell_y","roll_arm","roll_forearm")])
+diag(correl)<-0
+which(abs(correl)>0.75, arr.ind=TRUE)
+```
+
+The results reveal that yaw_belt and roll_belt have a higher correlation that 75%. Hence one of them can be safely eliminated from the list of predictive variables. After removing roll_belt, the maximum correlation between the
+remaining covariates can be calculated as follows:
+
+```{r}
+correl2<-cor(train1[,c("roll_belt","pitch_belt","magnet_dumbbell_z","magnet_dumbbell_y","pitch_forearm","accel_dumbbell_y","roll_arm","roll_forearm")])
+diag(correl2)<-0
+max(abs(correl2))
+
+correl3<-cor(train1[,c("yaw_belt","pitch_belt","magnet_dumbbell_z","magnet_dumbbell_y","pitch_forearm","accel_dumbbell_y","roll_arm","roll_forearm")])
+diag(correl3)<-0
+max(abs(correl3))
+
+```
+After removing 'roll_belt', the maximum correlation between the covariates is 69%, whereas after removing 'yaw_belt', the maximum correlation is 49%. Hence roll_belt is the more significant covariate and yaw_belt can be removed from the shortened list of covariates. 
+
+## Model
+The algorithm to be used for building the model is random forests from the caret package in R. The 9 most important variables are being used for prediction. These are roll_belt, num_window, pitch_belt, magnet_dumbbell_y, magnet_dumbbell_z, pitch_forearm, accel_dumbbell_y, roll_arm, and roll_forearm. A 2-fold cross-validation control will be employed. This is the simplest k-fold cross-validation possible and it will give a reduced computation time. Because the data set is large, using a small number of folds is justified. 
+
+```{r, cache=TRUE}
+set.seed(3141592)
+modelFit <- train(classe~roll_belt+pitch_belt+magnet_dumbbell_y+magnet_dumbbell_z+pitch_forearm+accel_dumbbell_y+roll_arm+roll_forearm,
+                  data=train1,
+                  method="rf",
+                  trControl=trainControl(method="cv",number=2),
+                  prox=TRUE,
+                  verbose=TRUE,
+                  allowParallel=TRUE)
+```
+Once the model has been trained on the set train1, it can be used to make predictions through the validation set to check its accuracy. 
+
+```{r, cache=TRUE}
+pred<-predict(modelFit, newdata=train2)
+confusionMat<-confusionMatrix(pred, train2$classe)
+confusionMat
+```
+According to the confusion matrix calculations, the model predicts on the validation set with an accuracy of 98%. 
+
+## Estimate for the OOB error
+The validation set will be used to calculate a measure for the OOB error. Since it was not involved in training the model, it can be used to get a good estimate of the OOB error.
+
+```{r}
+missClass = function(values, predicted) {
+  sum(predicted != values) / length(values)
+}
+OOB_errRate = missClass(train2$classe, pred)
+OOB_errRate
+```
+The OOB error rate is about 2% which is quite low. Hence this is a strong model for making predictions using the testing set and will be used to answer the rest of the questions from the quiz. 
+
+## Prediction Quiz
+Using the predictive model, predictions can be made from the testing portion of the data set as follows:
+
+```{r}
+pred2<-predict(modelFit, testing)
+pred2
+```
+
+As per the results of the quiz, the model predicted 100% of the results from the testing data accurately, proving that it is a good model for the data provided.
